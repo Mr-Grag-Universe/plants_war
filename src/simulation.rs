@@ -1,7 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 use rand::{prelude::*, rng};
 use ndarray::{s, Array2, SliceInfo, Dim, SliceInfoElem};
-use uuid::Uuid;
 use std::cmp;
 use std::fs::OpenOptions;
 use std::io::{Write, BufWriter};
@@ -49,12 +48,12 @@ impl Simulation {
 
     const WIN_W: usize = 7;
     const WIN_H: usize = 7;
-    const PAD_VALUE: f64 = -1.0; // или 0.0
+    const PAD_VALUE: f32 = -1.0; // или 0.0
 
     fn extract_window(
-        map: &Array2<f64>, // или другой тип элемента
+        map: &Array2<f32>, // или другой тип элемента
         coord: &Coord,      // { x: usize, y: usize }
-    ) -> Array2<f64> {
+    ) -> Array2<f32> {
         // центральное окно размером WIN_H x WIN_W, с центром в coord
         // в вашем примере вы брали от x-3..x+4 (7 ширина) и y-3..y+4
         let left = coord.x as isize - 3;
@@ -193,27 +192,27 @@ impl Simulation {
                     // let rec_uuid = self.cells[&rec_coord.to_tuple()].dir_uuid;
 
                     // produced energy
-                    let mut energy_produced = 0f64;
+                    let mut energy_produced = 0f32;
                     match p.resource {
                         ResourceType::Solar => {
-                            energy_produced = 0.1f64;
+                            energy_produced = 0.1f32;
                         },
                         ResourceType::Organic => {
                             let slice = Self::get_slice(&coord, 1, self.world_map.height, self.world_map.width);
                             let mut area =  self.world_map.organics.slice_mut(slice);
-                            if area.sum() > 0.0f64 {
+                            if area.sum() > 0.0f32 {
                                 area -= 0.2;
                                 area.map_inplace(|v| if *v < 0.0 { *v = 0.0 });
-                                energy_produced = 0.1f64;
+                                energy_produced = 0.1f32;
                             }
                         },
                         ResourceType::Electricity => {
                             let slice = Self::get_slice(&coord, 1, self.world_map.height, self.world_map.width);
                             let mut area =  self.world_map.electric.slice_mut(slice);
-                            if area.sum() > 0.0f64 {
+                            if area.sum() > 0.0f32 {
                                 area -= 0.2;
                                 area.map_inplace(|v| if *v < 0.0 { *v = 0.0 });
-                                energy_produced = 0.1f64;
+                                energy_produced = 0.1f32;
                             }
                         },
                     }
@@ -245,7 +244,7 @@ impl Simulation {
                 CellKind::Conductor => {
                     let mut rec_coord: Coord = Coord { x: 0, y: 0 };
                     let mut rec_dir: Option<Direction> = Some(Direction::North);
-                    let mut energy = 0f64;
+                    let mut energy = 0f32;
                     if let Some(cell) = self.cells.get(&coord.to_tuple_xy()) {
                         // calculate direction to store energy
                         (rec_coord, rec_dir) = Simulation::update_energy_dir(&self.world_map, &coord, cell, &self.cells);
@@ -265,7 +264,7 @@ impl Simulation {
                     }
                     // energy to zero
                     if let Some(c) = self.cells.get_mut(&coord.to_tuple_xy()) {
-                        c.energy = 0f64;
+                        c.energy = 0f32;
                     }
                     // actual direction for energy flow set
                     let Some(cell) = self.cells.get_mut(&coord.to_tuple_xy()) else {
@@ -275,13 +274,16 @@ impl Simulation {
                     else { panic!("rec_dir is None for some reason here"); }
                 },
                 CellKind::Storage(s) => {
+                    let Some(cell) = self.cells.get(&coord.to_tuple_xy()) else {
+                        panic!("There is no cell with such coords {coord:?}!");
+                    };
                     let slice_1 = Self::extract_window(&self.world_map.organics, &coord);
                     let slice_2 = Self::extract_window(&self.world_map.electric, &coord);
 
                     let input = Input {
                         organic_poisoning: slice_1.to_owned(),
                         electric_poisoning: slice_2.to_owned(),
-                        energy: s.energy
+                        energy: cell.energy
                     };
                     let actions = s.get_decision(input);
                     coord = Self::execute_actions(&mut self.cells, &mut new_coords, &self.world_map, actions, coord);
@@ -310,7 +312,7 @@ impl Simulation {
                         coord: Coord) -> Coord {
         let mut final_bud_coord = coord.clone();
         let mut action_types: Vec<u8> = Vec::new();
-        let mut need_energy = 0f64;
+        let mut need_energy = 0f32;
         let mut action_is_valid = [true; 4];
         let mut new_cells_coords: Vec<Coord> = Vec::new();
 
@@ -359,7 +361,7 @@ impl Simulation {
                 life_time: 100,
                 pos: coord.clone(),
                 out_dir: bud_dirs[main_bud_ind].clone(),
-                energy: 0f64
+                energy: 0f32
             };
             let Some(cell) = cells.remove(&coord.to_tuple_xy()) else {
                 panic!("execute: there is not cell in this coords??");
@@ -371,12 +373,22 @@ impl Simulation {
                 if i == main_bud_ind { continue; }
                 let new_bud_coord = coord.shift(&bud_dirs[i]);
                 new_coords.push(new_bud_coord.clone());
+                let Some(cell) = cells.get(&final_bud_coord.to_tuple_xy()) else {
+                    panic!("There is no cell with such coords!");
+                };
+                let genome = match &cell.kind {
+                    CellKind::Storage(st) => {
+                        if rng().random_bool(0.1) { st.genome.mutate() }
+                        else { st.genome.clone() }
+                    }
+                    _ => { panic!("Is not bud cell here!!!"); }
+                };
                 let cell = Cell {
-                    kind: CellKind::Storage(Storage { energy: 0.15, genome: Genome::random(1 + 2 * 7 * 7, 512, 512, 4 * 4, 0.0, 0.1) }),
+                    kind: CellKind::Storage(Storage {genome }),
                     life_time: 100,
                     pos: new_bud_coord.clone(),
                     out_dir: bud_dirs[i].clone(), // not important
-                    energy: 0f64
+                    energy: 0.15f32
                 };
                 cells.insert(new_bud_coord.to_tuple_xy(), cell);
             }
@@ -401,7 +413,7 @@ impl Simulation {
                 life_time: 100,
                 pos: new_cells_coords[i].clone(),
                 out_dir,
-                energy: 0f64
+                energy: 0f32
             };
             cells.insert(new_cells_coords[i].to_tuple_xy(), cell);
         }
@@ -409,13 +421,27 @@ impl Simulation {
         final_bud_coord
     }
 
-    pub fn save_state(&self) -> std::io::Result<()> {
+    pub fn save_view(&self, overwrite: bool) -> std::io::Result<()> {
         // println!("saving...");
 
         let width = self.world_map.width as i64;
         let height = self.world_map.height as i64;
 
-        let filename = format!("{}/{}_{}.txt", self.save_path, self.save_file_name, self.save_iter);
+        let filename = format!("{}/{}_meta.txt", self.save_path, self.save_file_name);
+        let path = Path::new(&filename);
+        if !path.exists() || overwrite {
+            let f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(path)?;
+            let mut w = BufWriter::new(f);
+            // запись размеров: "width height"
+            writeln!(w, "{},{}", self.world_map.height, self.world_map.width)?;
+            w.flush()?;
+        }
+
+        let filename = format!("{}/{}_{}.csv", self.save_path, self.save_file_name, self.save_iter);
         let path = Path::new(&filename);
 
         let file = OpenOptions::new()
@@ -425,12 +451,9 @@ impl Simulation {
             .open(path)?;
         let mut w = BufWriter::new(file);
 
-        // запись размеров: "width height"
-        writeln!(w, "{} {}", width, height)?;
-
         // записываем только занятые клетки: "x y"
         for (&(x, y), _cell) in &self.cells {
-            writeln!(w, "(x={}, y={}); kind: {};", x, y, _cell.kind.str())?;
+            writeln!(w, "{},{},{}", x, y, _cell.kind.str())?;
         }
 
         w.flush()?;

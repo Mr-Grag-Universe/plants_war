@@ -45,14 +45,14 @@ fn generate_cells_parallel(h: usize, w: usize, n: usize) -> Vec<Cell> {
         |local_rng, _i| {
             let genome = Genome::random(1 + 2 * 7 * 7, 512, 512, 4 * 4, 0.0, 0.1);
             let cell = Cell {
-                kind: CellKind::Storage(Storage { energy: 0.5, genome }),
+                kind: CellKind::Storage(Storage { genome }),
                 life_time: 100,
                 pos: Coord {
                     x: local_rng.random_range(0..w) as i64,
                     y: local_rng.random_range(0..h) as i64,
                 },
                 out_dir: common::Direction::East,
-                energy: 0.5,
+                energy: 0.15,
             };
             cell
         },
@@ -66,14 +66,14 @@ fn main() {
     let world_map = Map::new(1024, 1024);
     let mut simulation = Simulation::new(Some(world_map), String::from("saves"), String::from("snap"));
     println!("world generation...");
-    simulation.add_cells(generate_cells_parallel(1024, 1024, 10));
+    simulation.add_cells(generate_cells_parallel(1024, 1024, 1000));
     
     println!("\nrunning the world!");
-    let n_runs = 100;
+    let n_runs = 1000;
     let mut pb = ProgressBar::new(n_runs);
     for _ in 0..n_runs {
         simulation.step();
-        if simulation.save_state().is_err() {
+        if simulation.save_view(false).is_err() {
             println!("We broke around the saving of the state to file!");
             panic!("save error!");
         }

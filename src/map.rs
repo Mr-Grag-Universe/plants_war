@@ -3,8 +3,8 @@ use ndarray::{Array2};
 pub struct Map {
     pub width: usize,
     pub height: usize,
-    pub organics: Array2<f64>,
-    pub electric: Array2<f64>,
+    pub organics: Array2<f32>,
+    pub electric: Array2<f32>,
 }
 
 impl Map {
@@ -18,10 +18,10 @@ impl Map {
         x >= 0 && x < self.width as i64 && y >= 0 && y < self.height as i64
     }
 
-    pub fn set_organics(&mut self, x: usize, y: usize, val: f64) {
+    pub fn set_organics(&mut self, x: usize, y: usize, val: f32) {
         self.organics[(y,x)] = val;
     }
-    pub fn set_electric(&mut self, x: usize, y: usize, val: f64) {
+    pub fn set_electric(&mut self, x: usize, y: usize, val: f32) {
         self.electric[(y,x)] = val;
     }
 }
