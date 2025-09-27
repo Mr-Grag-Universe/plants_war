@@ -1,10 +1,8 @@
 use crate::common::*;
-use ndarray::{ArrayView1, Array1, Array2, Array3, Axis, s, Ix1};
-use uuid::Uuid;
+use ndarray::{ArrayView1, Array1, Array2, Axis, s, Ix1};
 use ndarray;
 use rand::rng;
 use rand_distr::{Distribution, Normal};
-use pbr;
 
 // #[derive(Debug)]
 pub struct Genome {

@@ -69,7 +69,7 @@ fn main() {
     simulation.add_cells(generate_cells_parallel(1024, 1024, 10));
     
     println!("\nrunning the world!");
-    let n_runs = 1000;
+    let n_runs = 100;
     let mut pb = ProgressBar::new(n_runs);
     for _ in 0..n_runs {
         simulation.step();
@@ -77,6 +77,7 @@ fn main() {
             println!("We broke around the saving of the state to file!");
             panic!("save error!");
         }
+        simulation.save_iter += 1;
         pb.inc();
     }
     pb.finish_println("done");

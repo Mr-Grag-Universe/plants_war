@@ -1,4 +1,4 @@
-use ndarray::{Array2, s};
+use ndarray::{Array2};
 
 pub struct Map {
     pub width: usize,

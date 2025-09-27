@@ -19,17 +19,14 @@ fn shuffled_indices(n: usize) -> Vec<usize> {
     idx
 }
 
-struct DirChange(Coord, Direction, Uuid);
-
 
 pub struct Simulation {
     cells: HashMap<(i64,i64), Cell>,
     coords: Vec<Coord>,
     world_map: Map,
-    storages: HashMap<Uuid, Storage>,
 
     
-    save_iter: usize,
+    pub save_iter: usize,
     save_path: String,
     save_file_name: String,
 }
@@ -38,14 +35,12 @@ impl Simulation {
     pub fn new(world_map: Option<Map>, save_path: String, save_file_name: String) -> Self {
         let world_map: Map = world_map.unwrap_or_else(|| Map::new(1024, 1024));
         let cells: HashMap<(i64,i64), Cell> = HashMap::new();
-        let storages: HashMap<Uuid, Storage> = HashMap::new();
         let coords: Vec<Coord> = Vec::new();
         let save_iter = 0;
         Simulation { 
             cells, 
             coords,
             world_map, 
-            storages,
             save_iter,
             save_path,
             save_file_name
