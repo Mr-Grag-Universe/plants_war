@@ -1,8 +1,11 @@
 use std::collections::{HashMap};
 use rand::{prelude::*, rng};
 use ndarray::{s, Array2, SliceInfo, Dim, SliceInfoElem};
+use rayon::iter::FromParallelIterator;
 use std::cmp;
+use std::fs;
 use std::fs::OpenOptions;
+use std::io;
 use std::io::{Write, BufWriter};
 use std::path::Path;
 
@@ -18,6 +21,36 @@ fn shuffled_indices(n: usize) -> Vec<usize> {
     idx
 }
 
+struct SimulationSettings {
+    life_time: i16,
+    energy_expanse: HashMap<String, f32>,
+    polution_increase: f32,
+    polution_decrease: f32,
+}
+
+impl SimulationSettings {
+    fn save(&self, path: &Path, overwrite: bool) -> std::io::Result<()> {
+        if !path.exists() || overwrite {
+            let f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(path)?;
+            let mut w = BufWriter::new(f);
+            // запись размеров: "width height"
+            writeln!(w, "{}", self.life_time)?;
+            writeln!(w, "{}", self.polution_increase)?;
+            writeln!(w, "{}", self.polution_decrease)?;
+            for (key, val) in &self.energy_expanse {
+                writeln!(w, "{}, {}", key, val)?;
+            }
+            w.flush()?;
+        }
+
+        Ok(())
+    }
+}
+
 
 pub struct Simulation {
     cells: HashMap<(i64,i64), Cell>,
@@ -28,27 +61,51 @@ pub struct Simulation {
     pub save_iter: usize,
     save_path: String,
     save_file_name: String,
+
+    settings: SimulationSettings,
 }
 
 impl Simulation {
-    pub fn new(world_map: Option<Map>, save_path: String, save_file_name: String) -> Self {
+    fn get_energy_expanse() -> HashMap<String, f32> {
+        let x = HashMap::<String, f32>::from_par_iter([
+            (String::from("producer"), 0.1),
+            (String::from("storage"), 0.25),
+        ]);
+        return x;
+    }
+
+    pub fn new(world_map: Option<Map>, 
+               save_path: String, save_file_name: String,
+               life_time: i16) -> Self {
         let world_map: Map = world_map.unwrap_or_else(|| Map::new(1024, 1024));
         let cells: HashMap<(i64,i64), Cell> = HashMap::new();
         let coords: Vec<Coord> = Vec::new();
         let save_iter = 0;
+        
+        let energy_expanse = Self::get_energy_expanse();
+        let settings = SimulationSettings {
+            life_time,
+            energy_expanse,
+            polution_increase: 0.1f32, // useless
+            polution_decrease: 0.1f32, // useless
+        };
+
         Simulation { 
             cells, 
             coords,
             world_map, 
             save_iter,
             save_path,
-            save_file_name
+            save_file_name,
+            settings,
         }
     }
 
-    const WIN_W: usize = 7;
-    const WIN_H: usize = 7;
+    const WIN_W: usize = 5;
+    const WIN_H: usize = 5;
     const PAD_VALUE: f32 = -1.0; // или 0.0
+    const HW: usize = Self::WIN_W / 2;
+    const HH: usize = Self::WIN_H / 2;
 
     fn extract_window(
         map: &Array2<f32>, // или другой тип элемента
@@ -56,28 +113,22 @@ impl Simulation {
     ) -> Array2<f32> {
         // центральное окно размером WIN_H x WIN_W, с центром в coord
         // в вашем примере вы брали от x-3..x+4 (7 ширина) и y-3..y+4
-        let left = coord.x as isize - 3;
-        let top = coord.y as isize - 3;
+        let map_h = map.nrows();
+        let map_w = map.ncols();
+
+        let src_x0 = coord.x.saturating_sub(Self::HW as i64) as usize;
+        let src_y0 = coord.y.saturating_sub(Self::HH as i64) as usize;
+        let src_x1 = (coord.x as usize + Self::HW + 1).min(map_w); // exclusive
+        let src_y1 = (coord.y as usize + Self::HH + 1).min(map_h);
 
         let mut out = Array2::from_elem((Self::WIN_H, Self::WIN_W), Self::PAD_VALUE);
 
-        // вычисляем пересечение с исходной картой
-        let map_h = map.nrows() as isize;
-        let map_w = map.ncols() as isize;
-
-        // диапазоны в координатах карты
-        let src_x0 = cmp::max(left, 0) as usize;
-        let src_y0 = cmp::max(top, 0) as usize;
-        let src_x1 = cmp::min(left + Self::WIN_W as isize, map_w) as usize; // exclusive
-        let src_y1 = cmp::min(top + Self::WIN_H as isize, map_h) as usize; // exclusive
-
-        // куда копировать в выходной матрице
-        let dst_x0 = (src_x0 as isize - left) as usize;
-        let dst_y0 = (src_y0 as isize - top) as usize;
-        let dst_x1 = dst_x0 + (src_x1 - src_x0);
-        let dst_y1 = dst_y0 + (src_y1 - src_y0);
-
         if src_x0 < src_x1 && src_y0 < src_y1 {
+            let dst_x0 = Self::HW.saturating_sub(coord.x.saturating_sub(src_x0 as i64) as usize);
+            let dst_y0 = Self::HH.saturating_sub(coord.y.saturating_sub(src_y0 as i64) as usize);
+            let dst_x1 = dst_x0 + (src_x1 - src_x0);
+            let dst_y1 = dst_y0 + (src_y1 - src_y0);
+
             let src_view = map.slice(s![src_y0..src_y1, src_x0..src_x1]);
             out.slice_mut(s![dst_y0..dst_y1, dst_x0..dst_x1]).assign(&src_view);
         }
@@ -122,21 +173,20 @@ impl Simulation {
                         panic!("There is not such cell!");
                     };
                     match cell.kind {
-                        CellKind::Producer(_) => { continue; },
+                        CellKind::Producer(_) => continue,
                         _ => {
                             // new receiver found
                             rec_coord = rec_coord_tmp;
                             rec_dir = Some(dir.clone());
-                            // new_dir.push(DirChange(rec_coord.clone(), dir, cell.dir_uuid));
                             break;
                         }
                     }
                 }
             }
-            if let Some(d) = &rec_dir { println!("contains!"); }
-            else { println!("Did not find!"); }
+            // if let Some(d) = &rec_dir { println!("contains!"); }
+            // else { println!("Did not find!"); }
         }
-        (rec_coord.clone(), rec_dir)
+        (rec_coord, rec_dir)
     }
 
     fn get_slice(center_coord : &Coord, r: i64, h: usize, w: usize) -> SliceInfo<[SliceInfoElem; 2], Dim<[usize; 2]>, Dim<[usize; 2]>> {
@@ -148,55 +198,52 @@ impl Simulation {
     }
 
     pub fn step(&mut self) {
+        assert_eq!(self.cells.len(), self.coords.len());
+        let mut new_coords: Vec<Coord> = Vec::with_capacity(self.cells.len());
         let order = shuffled_indices(self.cells.len());
-        
-        let mut new_coords: Vec<Coord> = Vec::new();
 
+        // decrease life time of all existing cells
+        for (_, cell) in self.cells.iter_mut() {
+            cell.life_time -= 1;
+        }
+
+        let mut deleted_cells_count = 0;
         for i in order {
             let mut coord = self.coords[i].clone();
-            let kind: &CellKind;
-            {
-                let Some(cell) = self.cells.get(&coord.to_tuple_xy()) else {
+            let key = coord.to_tuple_xy();
+
+            let kind = {
+                let Some(cell) = self.cells.get(&key) else {
                     panic!("There is no cell with such coords {coord:?}!");
                 };
                 
                 // if it's dead
                 if cell.life_time <= 0 {
-                    self.cells.remove(&coord.to_tuple_xy());
+                    self.cells.remove(&key);
                     Self::increase_polution(&mut self.world_map, &coord);
+                    deleted_cells_count += 1;
+                    // println!("delete from coord: (x={}, y={})", coord.x, coord.y);
                     continue;
                 }
 
-                kind = &cell.kind
-            }
+                &cell.kind
+            };
 
             match kind {
                 CellKind::Producer(p) => {
                     // calculate direction to store energy
-                    let mut rec_coord: Coord = Coord { x: 0, y: 0 };
-                    let mut rec_dir: Option<Direction> = Some(Direction::North);
-                    if let Some(cell) = self.cells.get(&coord.to_tuple_xy()) {
-                        // calculate direction to store energy
-                        (rec_coord, rec_dir) = Simulation::update_energy_dir(&self.world_map, &coord, cell, &self.cells);
-                        if !self.cells.contains_key(&rec_coord.to_tuple_xy()) {
-                            // kill cell (there is no receiver)
-                            continue;
-                        }
-                    }
-                    // println!("Producer cell: {:?} {:?}", rec_coord, rec_dir);
-
+                    let (rec_coord, rec_dir) = Simulation::update_energy_dir(&self.world_map, &coord, &self.cells[&key], &self.cells);
                     if !self.cells.contains_key(&rec_coord.to_tuple_xy()) {
                         // kill cell (there is no receiver)
+                        self.cells.remove(&key);
                         continue;
                     }
-                    // let rec_uuid = self.cells[&rec_coord.to_tuple()].dir_uuid;
+                    // println!("Producer cell: {:?} {:?}", rec_coord, rec_dir);
 
                     // produced energy
                     let mut energy_produced = 0f32;
                     match p.resource {
-                        ResourceType::Solar => {
-                            energy_produced = 0.1f32;
-                        },
+                        ResourceType::Solar => energy_produced = 0.1f32,
                         ResourceType::Organic => {
                             let slice = Self::get_slice(&coord, 1, self.world_map.height, self.world_map.width);
                             let mut area =  self.world_map.organics.slice_mut(slice);
@@ -217,90 +264,70 @@ impl Simulation {
                         },
                     }
                     
-                    { // energy increase
-                        let rec_cell = self.cells.get_mut(&rec_coord.to_tuple_xy());
-                        if let Some(c) = rec_cell {
-                            c.energy += energy_produced;
-                        } else {
-                            panic!("There is not such cell! rec_coord is probably wrong here!");
-                        }
+                    
+                    let rec_key = rec_coord.to_tuple_xy();
+                    let rec_cell = match self.cells.get_mut(&rec_key) {
+                        Some(c) => c,
+                        None => panic!(), // no receiver — skip
+                    };
+                    rec_cell.energy += energy_produced;
+
+                    // actual direction for energy flow set
+                    if let Some(cell_mut) = self.cells.get_mut(&key) {
+                        cell_mut.out_dir = rec_dir.expect("rec_dir is None");
+                    } else {
+                        panic!("There is no cell with such coords  {coord:?}!");
                     }
-                    { // actual direction for energy flow set
-                        let Some(cell) = self.cells.get_mut(&coord.to_tuple_xy()) else {
-                            panic!("There is no cell with such coords  {coord:?}!");
-                        };
-                        if let Some(d) = rec_dir {
-                            cell.out_dir = d;
-                        } else {
-                            panic!("rec_dir is None for some reason here  {coord:?}");
-                        }
-                    }
-                    // // add energy to a storage
-                    // self.storages
-                    //     .entry(rec_uuid)
-                    //     .and_modify(|s| s.energy += energy_produced)
-                    //     .or_insert_with(|| Storage { energy: energy_produced });
                 },
                 CellKind::Conductor => {
-                    let mut rec_coord: Coord = Coord { x: 0, y: 0 };
-                    let mut rec_dir: Option<Direction> = Some(Direction::North);
-                    let mut energy = 0f32;
-                    if let Some(cell) = self.cells.get(&coord.to_tuple_xy()) {
-                        // calculate direction to store energy
-                        (rec_coord, rec_dir) = Simulation::update_energy_dir(&self.world_map, &coord, cell, &self.cells);
-                        if !self.cells.contains_key(&rec_coord.to_tuple_xy()) {
-                            // kill cell (there is no receiver)
-                            continue;
-                        }
-                        energy = cell.energy;
+                    let (rec_coord, rec_dir) = {
+                        let cell_ref = &self.cells[&key];
+                        Simulation::update_energy_dir(&self.world_map, &coord, cell_ref, &self.cells)
+                    };
+                    if !self.cells.contains_key(&rec_coord.to_tuple_xy()) {
+                        // kill cell (there is no receiver)
+                        self.cells.remove(&key);
+                        continue;
                     }
+                    let rec_key = rec_coord.to_tuple_xy();
+                    let energy = self.cells[&key].energy;
                     
                     // energy increase
-                    let rec_cell = self.cells.get_mut(&rec_coord.to_tuple_xy());
-                    if let Some(c) = rec_cell {
+                    if let Some(c) = self.cells.get_mut(&rec_key) {
                         c.energy += energy;
-                    } else {
-                        panic!("There is not such cell! rec_coord is probably wrong here!");
-                    }
+                    } else { panic!(); }
                     // energy to zero
                     if let Some(c) = self.cells.get_mut(&coord.to_tuple_xy()) {
                         c.energy = 0f32;
-                    }
+                    } else { panic!(); }
                     // actual direction for energy flow set
-                    let Some(cell) = self.cells.get_mut(&coord.to_tuple_xy()) else {
-                        panic!("There is no cell with such coords!");
-                    };
-                    if let Some(d) = rec_dir { cell.out_dir = d; }
-                    else { panic!("rec_dir is None for some reason here"); }
+                    if let Some(c) = self.cells.get_mut(&key) {
+                        c.energy = 0.0;
+                        c.out_dir = rec_dir.expect("rec_dir is None");
+                    } else { panic!(); }
                 },
                 CellKind::Storage(s) => {
-                    let Some(cell) = self.cells.get(&coord.to_tuple_xy()) else {
-                        panic!("There is no cell with such coords {coord:?}!");
-                    };
+                    let Some(cell_ref) = self.cells.get(&key) else { panic!() };
+
                     let slice_1 = Self::extract_window(&self.world_map.organics, &coord);
                     let slice_2 = Self::extract_window(&self.world_map.electric, &coord);
 
                     let input = Input {
                         organic_poisoning: slice_1.to_owned(),
                         electric_poisoning: slice_2.to_owned(),
-                        energy: cell.energy
+                        energy: cell_ref.energy
                     };
                     let actions = s.get_decision(input);
-                    coord = Self::execute_actions(&mut self.cells, &mut new_coords, &self.world_map, actions, coord);
-                    // println!("final bud coord is {coord:?}");
-                    // println!("There is {} units of energy for now!", s.energy);
+                    coord = Self::execute_actions(&mut self.cells, &mut new_coords, 
+                                                  &self.world_map, actions, coord, &self.settings);
                 },
             }
-            // println!("coord is {coord:?}");
 
             // save this cell
             new_coords.push(coord.clone());
         }
-
-        // for coord in new_coords.iter() {
-        //     println!("coords in new coords: {coord:?}");
-        //     assert!(self.cells.contains_key(&coord.to_tuple_xy()));
-        // }
+        // println!("Cells count: {}, Coodrs count: {}", self.cells.len(), new_coords.len());
+        // println!("Deleted cells count: {}", deleted_cells_count);
 
         self.coords = new_coords;
     }
@@ -309,17 +336,16 @@ impl Simulation {
                         new_coords: &mut Vec<Coord>, 
                         world_map: &Map, 
                         actions: Vec<Action>, 
-                        coord: Coord) -> Coord {
+                        coord: Coord, settings: &SimulationSettings) -> Coord {
         let mut final_bud_coord = coord.clone();
-        let mut action_types: Vec<u8> = Vec::new();
         let mut need_energy = 0f32;
         let mut action_is_valid = [true; 4];
         let mut new_cells_coords: Vec<Coord> = Vec::new();
 
         let mut bud_counter = 0;
         let mut bud_dirs: Vec<Direction> = Vec::new();
+
         for (i, action) in actions.iter().enumerate() {
-            action_types.push(action.1);
             let action_coord = coord.shift(&action.0);
             new_cells_coords.push(action_coord.clone());
             // вышли за рамки мира
@@ -339,83 +365,95 @@ impl Simulation {
                 // 1 - root
                 // 2 - antena
                 // 3 - move/create bud here
-                0..3 => { need_energy += 0.1; },
-                3 => { need_energy += 0.15; bud_counter += 1; bud_dirs.push(action.0.clone()); },
-                _ => { panic!("there is not such code in my base!"); },
+                0..=2 => { need_energy += settings.energy_expanse["producer"]; },
+                3 => { 
+                    need_energy += settings.energy_expanse["storage"]; 
+                    bud_counter += 1; 
+                    bud_dirs.push(action.0.clone()); 
+                },
+                _ => unreachable!("unknown action code"),
             }
         }
-        let Some(cell) = cells.get(&coord.to_tuple_xy()) else {
-            panic!("There is no cell with such coords!");
+
+        let cell_key = coord.to_tuple_xy();
+        let cell = match cells.get(&cell_key) {
+            Some(c) => c,
+            None => panic!("There is no cell with such coords!"),
         };
         if need_energy > cell.energy { return final_bud_coord; }
+        
         // there is some buds to create/move
         if bud_counter > 0 {
             // chose the main direction and new buds directions
             let mut r = rng();
             let main_bud_ind = r.random_range(0..bud_counter);
+
             // move main bud
             final_bud_coord = coord.shift(&bud_dirs[main_bud_ind]);
+            
             new_coords.push(coord.clone());
-            let conductor_cell = Cell {
+            let conductor = Cell {
                 kind: CellKind::Conductor,
-                life_time: 100,
+                life_time: settings.life_time,
                 pos: coord.clone(),
                 out_dir: bud_dirs[main_bud_ind].clone(),
                 energy: 0f32
             };
-            let Some(cell) = cells.remove(&coord.to_tuple_xy()) else {
-                panic!("execute: there is not cell in this coords??");
-            };
-            cells.insert(coord.to_tuple_xy(), conductor_cell);
-            cells.insert(final_bud_coord.to_tuple_xy(), cell);
+
+            let old_cell = cells.remove(&cell_key).expect("execute: there is not cell in this coords??");
+            cells.insert(cell_key, conductor);
+            cells.insert(final_bud_coord.to_tuple_xy(), old_cell);
+
             // create extra buds
             for i in 0..bud_counter {
                 if i == main_bud_ind { continue; }
                 let new_bud_coord = coord.shift(&bud_dirs[i]);
                 new_coords.push(new_bud_coord.clone());
-                let Some(cell) = cells.get(&final_bud_coord.to_tuple_xy()) else {
-                    panic!("There is no cell with such coords!");
-                };
-                let genome = match &cell.kind {
+
+                let parent_key = final_bud_coord.to_tuple_xy();
+                let parent_cell = cells.get(&parent_key).expect("There is no cell with such coords.");
+                let genome = match &parent_cell.kind {
                     CellKind::Storage(st) => {
-                        if rng().random_bool(0.1) { st.genome.mutate() }
+                        if rng().random_bool(0.15) { st.genome.mutate() }
                         else { st.genome.clone() }
                     }
                     _ => { panic!("Is not bud cell here!!!"); }
                 };
-                let cell = Cell {
-                    kind: CellKind::Storage(Storage {genome }),
-                    life_time: 100,
+                
+                let new_cell = Cell {
+                    kind: CellKind::Storage(Storage { genome }),
+                    life_time: settings.life_time,
                     pos: new_bud_coord.clone(),
-                    out_dir: bud_dirs[i].clone(), // not important
-                    energy: 0.15f32
+                    out_dir: bud_dirs[i].clone(),
+                    energy: settings.energy_expanse["storage"]*0.8
                 };
-                cells.insert(new_bud_coord.to_tuple_xy(), cell);
+                cells.insert(new_bud_coord.to_tuple_xy(), new_cell);
             }
         }
+
         // create other cells
         // there is not buds to create/move
-        for i in 0..actions.len() {
-            // if 
+        for (i, action) in actions.iter().enumerate() {
             if !action_is_valid[i] { continue; }
-            let kind = match actions[i].1 {
+            let kind = match action.1 {
                 0 => CellKind::Producer(Producer{resource: ResourceType::Solar}),
                 1 => CellKind::Producer(Producer{resource: ResourceType::Organic}),
                 2 => CellKind::Producer(Producer{resource: ResourceType::Electricity}),
-                3 => { continue; },
-                _ => panic!("there is not such code here"),
+                3 => continue,
+                _ => unreachable!("unknown action code"),
             };
-            new_coords.push(new_cells_coords[i].clone());
-            let out_dir = actions[i].0.oposite().clone();
+            let pos = new_cells_coords[i].clone();
+            new_coords.push(pos.clone());
+            let out_dir = action.0.oposite().clone();
             
             let cell = Cell {
                 kind,
-                life_time: 100,
-                pos: new_cells_coords[i].clone(),
+                life_time: settings.life_time,
+                pos,
                 out_dir,
                 energy: 0f32
             };
-            cells.insert(new_cells_coords[i].to_tuple_xy(), cell);
+            cells.insert(cell.pos.to_tuple_xy(), cell);
         }
 
         final_bud_coord
@@ -423,10 +461,7 @@ impl Simulation {
 
     pub fn save_view(&self, overwrite: bool) -> std::io::Result<()> {
         // println!("saving...");
-
-        let width = self.world_map.width as i64;
-        let height = self.world_map.height as i64;
-
+        ensure_dir(Path::new(&self.save_path)).expect("Cannot ensure save directory!");
         let filename = format!("{}/{}_meta.txt", self.save_path, self.save_file_name);
         let path = Path::new(&filename);
         if !path.exists() || overwrite {
@@ -457,6 +492,71 @@ impl Simulation {
         }
 
         w.flush()?;
+        Ok(())
+    }
+
+    pub fn save_state(&self, overwrite: bool) -> std::io::Result<()> {
+        let save_path = format!("{}_back", self.save_path);
+        ensure_dir(Path::new(&save_path)).expect("save_state: Cannot ensure save directory!");
+        
+        // save map info
+        let map_path = Path::new(save_path.as_str()).join("map");
+        ensure_dir(Path::new(&map_path)).expect("save_state: Cannot ensure save directory!");
+        self.world_map.save(map_path.as_path(), overwrite).expect("cannot save map to file!");
+
+        // simulation dir
+        let sim_path = Path::new(save_path.as_str()).join("sim");
+        ensure_dir(Path::new(&sim_path)).expect("save_state: Cannot ensure save directory!");
+
+        // save meta info about simulation
+        let path = sim_path.join("simulation_meta.txt");
+        if !path.exists() || overwrite {
+            let f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(path)?;
+            let mut w = BufWriter::new(f);
+            // запись размеров: "width height"
+            writeln!(w, "{},{}", self.world_map.height, self.world_map.width)?;
+            writeln!(w, "{}", self.save_iter)?;
+            writeln!(w, "{}", self.save_path)?;
+            writeln!(w, "{}", self.save_file_name)?;
+            w.flush()?;
+        }
+
+        // save simulation settings
+        let path = sim_path.join("simulation_settings.txt");
+        self.settings.save(path.as_path(), overwrite).expect("cannot save simulation settings!!!");
+
+        // save cells
+        let path = sim_path.join("cells");
+        ensure_dir(path.as_path()).expect("save_state: Cannot ensure save directory!");
+        self.save_cells(path.as_path(), overwrite).expect("cannot save cells!!!");
+
+        Ok(())
+    }
+
+    fn save_cells(&self, path: &Path, overwrite: bool) -> std::io::Result<()> {
+        for (i, (coord, cell)) in self.cells.iter().enumerate() {
+            let cell_path = path.join(format!("cell_{}", i));
+            ensure_dir(cell_path.as_path()).expect("save_state: Cannot ensure save directory!");
+            cell.save(cell_path.as_path(), overwrite).expect("save_state: cannot save cell to cell_dir");
+
+            // save_coords
+            let coord_path: std::path::PathBuf = cell_path.join("coord.txt");
+            if !coord_path.exists() || overwrite {
+                let f = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(coord_path)?;
+                let mut w = BufWriter::new(f);
+                // запись размеров: "width height"
+                writeln!(w, "{},{}", coord.0, coord.1)?;
+                w.flush()?;
+            }
+        }
         Ok(())
     }
 }

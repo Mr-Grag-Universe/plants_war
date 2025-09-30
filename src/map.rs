@@ -1,4 +1,9 @@
 use ndarray::{Array2};
+use std::fs::OpenOptions;
+use std::io::{Write, BufWriter};
+use std::path::Path;
+use std::error::Error;
+use crate::common::*;
 
 pub struct Map {
     pub width: usize,
@@ -23,5 +28,27 @@ impl Map {
     }
     pub fn set_electric(&mut self, x: usize, y: usize, val: f32) {
         self.electric[(y,x)] = val;
+    }
+
+    pub fn save(&self, save_path: &Path, overwrite: bool) -> Result<(), Box<dyn Error>> {
+        let meta_path = save_path.join("meta.txt");
+        if !meta_path.as_path().exists() || overwrite {
+            let f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(meta_path.as_path())?;
+            let mut w = BufWriter::new(f);
+            writeln!(w, "{},{}", self.height, self.width)?;
+            w.flush()?;
+        }
+
+        let npy_path = save_path.join("organic.npy");
+        save_npy(&self.organics, npy_path.as_path())?;
+
+        let npy_path = save_path.join("electric.npy");
+        save_npy(&self.electric, npy_path.as_path())?;
+
+        Ok(())
     }
 }

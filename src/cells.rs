@@ -3,6 +3,10 @@ use ndarray::{ArrayView1, Array1, Array2, Axis, s, Ix1};
 use ndarray;
 use rand::rng;
 use rand_distr::{Distribution, Normal};
+use std::path::Path;
+use std::error::Error;
+use std::fs::{OpenOptions, File};
+use std::io::{BufWriter, Write};
 
 // #[derive(Debug)]
 pub struct Genome {
@@ -210,4 +214,59 @@ pub struct Cell {
     pub pos: Coord,
     pub out_dir: Direction,
     pub energy: f32,
+}
+
+impl Cell {
+    pub fn save(&self, save_path: &Path, overwrite: bool) -> Result<(), Box<dyn Error>> {
+        // main.txt (meta)
+        let meta_path = save_path.join("main.txt");
+        if !meta_path.exists() || overwrite {
+            let f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&meta_path)?;
+            let mut w = BufWriter::new(f);
+            // Пример: kind, life_time, pos(x,y), out_dir, energy
+            writeln!(
+                w,
+                "{},{},{},{}",
+                self.kind.str(),
+                self.life_time,
+                self.pos.x, // предполагается, что Coord имеет поля x,y
+                self.pos.y
+            )?;
+            writeln!(w, "out_dir:{:?}", self.out_dir)?;
+            writeln!(w, "energy:{}", self.energy)?;
+            w.flush()?;
+        }
+
+        // genomes directory
+        let genomes_dir = save_path.join("genomes");
+        ensure_dir(genomes_dir.as_path()).expect("cannot ensure genome directory");
+
+        // If cell has a Genome (Storage), save matrices
+        if let CellKind::Storage(storage) = &self.kind {
+            let genome_dir = genomes_dir;
+            ensure_dir(genome_dir.as_path()).expect("cannot ensure storage directory");
+
+            let w1_path = genome_dir.join("w1.npy");
+            save_npy(&storage.genome.w1, w1_path.as_path())?;
+            let w2_path = genome_dir.join("w2.npy");
+            save_npy(&storage.genome.w2, w2_path.as_path())?;
+            let w3_path = genome_dir.join("w3.npy");
+            save_npy(&storage.genome.w3, w3_path.as_path())?;
+            // optionally save activation choice as text
+        }
+
+        // If Producer or other kinds, save their data if needed
+        if let CellKind::Producer(prod) = &self.kind {
+            let prod_path = save_path.join("producer.txt");
+            let f = File::create(prod_path)?;
+            let mut bw = BufWriter::new(f);
+            writeln!(bw, "resource:{:?}", prod.resource)?;
+        }
+
+        Ok(())
+    }
 }

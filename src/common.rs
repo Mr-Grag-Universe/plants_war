@@ -1,3 +1,9 @@
+use ndarray::{Array2};
+use std::path::Path;
+use ndarray_npy::{write_npy, WriteNpyError};
+use std::io;
+use std::fs;
+
 #[derive(Debug)]
 pub struct Coord { pub x: i64, pub y: i64 }
 impl Coord {
@@ -49,3 +55,19 @@ impl Direction {
 pub enum ResourceType { Solar, Organic, Electricity }
 
 pub struct Action(pub Direction, pub u8);
+
+pub fn save_npy<T: ndarray_npy::WritableElement>(arr: &Array2<T>, path: &Path) -> Result<(), WriteNpyError> {
+    write_npy(path, arr)
+}
+
+pub fn ensure_dir(path: &Path) -> io::Result<()> {
+    if path.exists() {
+        if path.is_dir() {
+            Ok(())
+        } else {
+            Err(io::Error::new(io::ErrorKind::AlreadyExists, "path exists and is not a directory"))
+        }
+    } else {
+        fs::create_dir_all(path)
+    }
+}
