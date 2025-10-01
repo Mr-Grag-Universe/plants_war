@@ -3,11 +3,10 @@ use rand::{prelude::*, rng};
 use ndarray::{s, Array2, SliceInfo, Dim, SliceInfoElem};
 use rayon::iter::FromParallelIterator;
 use std::cmp;
-use std::fs;
-use std::fs::OpenOptions;
-use std::io;
-use std::io::{Write, BufWriter};
+use std::fs::{OpenOptions, File};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
+use std::error::Error;
 
 use crate::common::*;
 use crate::map::{Map};
@@ -48,6 +47,63 @@ impl SimulationSettings {
         }
 
         Ok(())
+    }
+
+        fn load(path: &Path) -> Result<Self, Box<dyn Error>> {
+        use std::io::BufRead;
+        let f = File::open(path)?;
+        let mut reader = std::io::BufReader::new(f);
+        let mut line = String::new();
+
+        // life_time
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            return Err("simulation settings: missing life_time".into());
+        }
+        let life_time: i16 = line.trim().parse()?;
+
+        // polution_increase
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            return Err("simulation settings: missing polution_increase".into());
+        }
+        let polution_increase: f32 = line.trim().parse()?;
+
+        // polution_decrease
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            return Err("simulation settings: missing polution_decrease".into());
+        }
+        let polution_decrease: f32 = line.trim().parse()?;
+
+        // remaining lines: energy_expanse key, val pairs
+        let mut energy_expanse: HashMap<String, f32> = HashMap::new();
+        loop {
+            line.clear();
+            let bytes = reader.read_line(&mut line)?;
+            if bytes == 0 {
+                break;
+            }
+            let s = line.trim();
+            if s.is_empty() {
+                continue;
+            }
+            // expect "key, val" or "key,val"
+            let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
+            if parts.len() != 2 {
+                return Err(format!("invalid energy_expanse line: {}", s).into());
+            }
+            let key = parts[0].to_string();
+            let val: f32 = parts[1].parse()?;
+            energy_expanse.insert(key, val);
+        }
+
+        Ok(SimulationSettings {
+            life_time,
+            energy_expanse,
+            polution_increase,
+            polution_decrease,
+        })
     }
 }
 
@@ -558,5 +614,100 @@ impl Simulation {
             }
         }
         Ok(())
+    }
+
+    pub fn load(save_path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        // load map
+        let map_path = save_path.join("map");
+        let world_map = Map::load(&map_path)?;
+
+        // load sim meta
+        let sim_path = save_path.join("sim");
+        let meta_path = sim_path.join("simulation_meta.txt");
+        let mut save_iter = 0usize;
+        let mut save_path_str = String::new();
+        let mut save_file_name = String::new();
+        if meta_path.exists() {
+            let f = File::open(&meta_path)?;
+            let mut br = BufReader::new(f);
+            let mut lines = Vec::new();
+            loop {
+                let mut tmp = String::new();
+                let bytes = br.read_line(&mut tmp)?;
+                if bytes == 0 { break; }
+                lines.push(tmp);
+            }
+            if !lines.is_empty() {
+                let dims: Vec<&str> = lines[0].trim().split(',').collect();
+                if dims.len() == 2 {
+                    // optionally use dims
+                }
+            }
+            if lines.len() > 1 {
+                save_iter = lines[1].trim().parse().unwrap_or(0);
+            }
+            if lines.len() > 2 {
+                save_path_str = lines[2].trim().to_string();
+            }
+            if lines.len() > 3 {
+                save_file_name = lines[3].trim().to_string();
+            }
+        }
+
+        // load settings
+        let settings_path = sim_path.join("simulation_settings.txt");
+        let settings = SimulationSettings::load(&settings_path)?;
+
+        // load cells
+        let cells_path = sim_path.join("cells");
+        let cells = Self::load_cells(&cells_path)?;
+        let mut coords: Vec<Coord> = Vec::with_capacity(cells.len());
+        for ((x, y), _) in &cells {
+            coords.push(Coord { x: *x, y: *y });
+        }
+
+        Ok(Self {
+            world_map,
+            settings,
+            cells,
+            coords,
+            save_iter,
+            save_path: save_path_str,
+            save_file_name
+        })
+    }
+
+    fn load_cells(path: &std::path::Path) -> Result<HashMap<(i64, i64), Cell>, Box<dyn std::error::Error>> {
+        if !path.exists() {
+            panic!("there is not saved cells here!");
+        }
+        let mut cells: HashMap<(i64, i64), Cell> = HashMap::new();
+        // перебираем папки cell_*
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() { continue; }
+            let cell_dir = entry.path();
+            // load coord
+            let coord_path = cell_dir.join("coord.txt");
+            let coord = if coord_path.exists() {
+                let f = File::open(coord_path)?;
+                let mut br = BufReader::new(f);
+                let mut line = String::new();
+                br.read_line(&mut line)?;
+                let parts: Vec<&str> = line.trim().split(',').collect();
+                if parts.len() != 2 { return Err("coord.txt malformed".into()); }
+                let x: i64 = parts[0].parse()?;
+                let y: i64 = parts[1].parse()?;
+                Coord { x, y }
+            } else {
+                // fallback: try parse index from folder name
+                let name = entry.file_name().into_string().unwrap_or_default();
+                // координаты 0,0 по умолчанию
+                Coord { x: 0, y: 0 }
+            };
+            let cell = Cell::load(&cell_dir)?;
+            cells.insert(coord.to_tuple_xy(), cell);
+        }
+        Ok(cells)
     }
 }

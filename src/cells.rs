@@ -6,7 +6,8 @@ use rand_distr::{Distribution, Normal};
 use std::path::Path;
 use std::error::Error;
 use std::fs::{OpenOptions, File};
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Write, BufReader, BufRead};
+use std::str::FromStr;
 
 // #[derive(Debug)]
 pub struct Genome {
@@ -268,5 +269,145 @@ impl Cell {
         }
 
         Ok(())
+    }
+
+    pub fn load(save_path: &Path) -> Result<Self, Box<dyn Error>> {
+        // main.txt
+        let meta_path = save_path.join("main.txt");
+        if !meta_path.exists() {
+            return Err(format!("main.txt not found in {:?}", save_path).into());
+        }
+        let f = File::open(&meta_path)?;
+        let mut reader = BufReader::new(f);
+        let mut line = String::new();
+
+        // First line: "{kind},{life_time},{pos.x},{pos.y}"
+        reader.read_line(&mut line)?;
+        if line.trim().is_empty() {
+            return Err("main.txt is empty".into());
+        }
+        let first = line.trim().to_string();
+        let parts: Vec<&str> = first.split(',').collect();
+        if parts.len() < 4 {
+            return Err(format!("unexpected main.txt first line format: {}", first).into());
+        }
+        let kind_str = parts[0];
+        let life_time: i16 = parts[1].parse()?;
+        let pos_x: i64 = parts[2].parse()?; // предполагаем целочисленные координаты
+        let pos_y: i64 = parts[3].parse()?;
+        let pos = Coord { x: pos_x, y: pos_y };
+
+        // Second line: "out_dir:{:?}"
+        line.clear();
+        reader.read_line(&mut line)?;
+        let out_dir = if !line.trim().is_empty() {
+            let s = line.trim();
+            // ожидаем формат "out_dir:Direction::Something" или "out_dir:Something" или "out_dir:Direction({:?})"
+            // Попробуем извлечь часть после ':' и убрать префиксы/скобки
+            if let Some(idx) = s.find(':') {
+                let v = s[(idx + 1)..].trim();
+                // Попробуем парсить через FromStr для Direction, иначе через Debug string
+                if let Ok(d) = Direction::from_str(v) {
+                    d
+                } else {
+                    // Удалим возможные символы "Direction", '"' и т.д.
+                    let cleaned = v.replace("Direction::", "")
+                                   .replace("Direction(", "")
+                                   .replace(')', "")
+                                   .replace('"', "")
+                                   .trim()
+                                   .to_string();
+                    Direction::from_str(&cleaned)?
+                }
+            } else {
+                return Err("cannot parse out_dir line".into());
+            }
+        } else {
+            return Err("out_dir line missing".into());
+        };
+
+        // Third line: "energy:{}"
+        line.clear();
+        reader.read_line(&mut line)?;
+        let energy: f32 = if !line.trim().is_empty() {
+            let s = line.trim();
+            if let Some(idx) = s.find(':') {
+                let v = s[(idx + 1)..].trim();
+                v.parse()?
+            } else {
+                return Err("cannot parse energy line".into());
+            }
+        } else {
+            0.0
+        };
+
+        // Now determine kind and load additional data
+        let genomes_dir = save_path.join("genomes");
+        let kind = match kind_str {
+            "producer" => {
+                // try read producer.txt for resource
+                let prod_path = save_path.join("producer.txt");
+                let resource = if prod_path.exists() {
+                    let pf = File::open(prod_path)?;
+                    let mut pr = BufReader::new(pf);
+                    let mut prod_line = String::new();
+                    pr.read_line(&mut prod_line)?;
+                    // ожидаем "resource:{:?}"
+                    if let Some(idx) = prod_line.find(':') {
+                        let val = prod_line[(idx + 1)..].trim();
+                        // Попробуем парсить через FromStr для ResourceType
+                        if let Ok(r) = ResourceType::from_str(val) {
+                            r
+                        } else {
+                            // убрать "ResourceType::" и т.д.
+                            let cleaned = val.replace("ResourceType::", "").replace('"', "").trim().to_string();
+                            ResourceType::from_str(&cleaned)?
+                        }
+                    } else {
+                        return Err("cannot parse producer.txt".into());
+                    }
+                } else {
+                    // default resource если нет файла
+                    ResourceType::default()
+                };
+                CellKind::Producer(Producer { resource })
+            }
+            "bud" | "storage" => {
+                // load genome from .npy files
+                if !genomes_dir.exists() {
+                    return Err(format!("genomes directory not found in {:?}", save_path).into());
+                }
+                let w1_path = genomes_dir.join("w1.npy");
+                let w2_path = genomes_dir.join("w2.npy");
+                let w3_path = genomes_dir.join("w3.npy");
+                if !w1_path.exists() || !w2_path.exists() || !w3_path.exists() {
+                    return Err("one of genome files (w1.npy,w2.npy,w3.npy) is missing".into());
+                }
+
+                // предполагается функция load_npy -> Array2<f32>
+                let w1: Array2<f32> = load_npy(&w1_path)?;
+                let w2: Array2<f32> = load_npy(&w2_path)?;
+                let w3: Array2<f32> = load_npy(&w3_path)?;
+
+                let activation = Box::new(|v: &Array1<f32>| -> Array1<f32> {
+                    v.mapv(|x| if x > 0.0 { x } else { 0.0 })
+                });
+
+                let genome = Genome { w1, w2, w3, activation };
+                CellKind::Storage(Storage { genome })
+            }
+            "conductor" => CellKind::Conductor,
+            other => {
+                return Err(format!("unknown cell kind: {}", other).into());
+            }
+        };
+
+        Ok(Cell {
+            kind,
+            life_time,
+            pos,
+            out_dir,
+            energy,
+        })
     }
 }

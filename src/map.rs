@@ -1,6 +1,6 @@
 use ndarray::{Array2};
-use std::fs::OpenOptions;
-use std::io::{Write, BufWriter};
+use std::fs::{OpenOptions, File};
+use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 use std::error::Error;
 use crate::common::*;
@@ -50,5 +50,39 @@ impl Map {
         save_npy(&self.electric, npy_path.as_path())?;
 
         Ok(())
+    }
+
+    pub fn load(save_path: &Path) -> Result<Self, Box<dyn Error>> {
+        // meta.txt: "height,width"
+        let meta_path = save_path.join("meta.txt");
+        if !meta_path.exists() {
+            return Err(format!("meta.txt not found in {:?}", save_path).into());
+        }
+        let mut f = File::open(&meta_path)?;
+        let mut contents = String::new();
+        f.read_to_string(&mut contents)?;
+        let first_line = contents.lines().next().ok_or("meta.txt is empty")?;
+        let parts: Vec<&str> = first_line.trim().split(',').collect();
+        if parts.len() < 2 {
+            return Err("unexpected meta.txt format".into());
+        }
+        let height: usize = parts[0].parse()?;
+        let width: usize = parts[1].parse()?;
+
+        let organic_path = save_path.join("organic.npy");
+        let electric_path = save_path.join("electric.npy");
+        if !organic_path.exists() || !electric_path.exists() {
+            return Err("organic.npy or electric.npy missing".into());
+        }
+
+        let organics: Array2<f32> = load_npy(&organic_path)?;
+        let electric: Array2<f32> = load_npy(&electric_path)?;
+
+        Ok(Map {
+            height,
+            width,
+            organics,
+            electric,
+        })
     }
 }

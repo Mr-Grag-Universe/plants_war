@@ -1,8 +1,10 @@
 use ndarray::{Array2};
+use serde::de::value::Error;
 use std::path::Path;
-use ndarray_npy::{write_npy, WriteNpyError};
+use ndarray_npy::{write_npy, WriteNpyError, ReadNpyError, ReadNpyExt};
 use std::io;
 use std::fs;
+use std::fs::File;
 
 #[derive(Debug)]
 pub struct Coord { pub x: i64, pub y: i64 }
@@ -37,6 +39,15 @@ impl Coord {
 #[derive(Debug)]
 pub enum Direction { North, East, South, West }
 impl Direction {
+    pub fn from_str(s: &str) -> Result<Direction, Error> {
+        match s {
+            "North" => Ok(Direction::North),
+            "South" => Ok(Direction::South),
+            "West"  => Ok(Direction::West),
+            "East"  => Ok(Direction::East),
+            _ => panic!("wrong direction in str-dir conversion!")
+        }
+    }
     pub fn all_directions() -> [Direction; 4] {
         [Direction::North, Direction::East, Direction::South, Direction::West]
     }
@@ -54,10 +65,30 @@ impl Direction {
 #[derive(Debug)]
 pub enum ResourceType { Solar, Organic, Electricity }
 
+impl ResourceType {
+    pub fn from_str(s: &str) -> Result<Self, Error> {
+        match s {
+            "Solar"       => Ok(Self::Solar),
+            "Electricity" => Ok(Self::Electricity),
+            "Organic"     => Ok(Self::Organic),
+            _ => panic!("there is not such resource type!")
+        }
+    }
+
+    pub fn default() -> Self {
+        return Self::Solar;
+    }
+}
+
 pub struct Action(pub Direction, pub u8);
 
 pub fn save_npy<T: ndarray_npy::WritableElement>(arr: &Array2<T>, path: &Path) -> Result<(), WriteNpyError> {
     write_npy(path, arr)
+}
+
+pub fn load_npy<T: ndarray_npy::ReadableElement>(path: &Path) -> Result<Array2<T>, ReadNpyError> {
+    let f = File::open(path).map_err(|e| ReadNpyError::Io(e))?;
+    Array2::read_npy(f)
 }
 
 pub fn ensure_dir(path: &Path) -> io::Result<()> {
