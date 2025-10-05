@@ -25,6 +25,8 @@ struct SimulationSettings {
     energy_expanse: HashMap<String, f32>,
     polution_increase: f32,
     polution_decrease: f32,
+
+    polution_critical_lvl: f32,
 }
 
 impl SimulationSettings {
@@ -40,6 +42,7 @@ impl SimulationSettings {
             writeln!(w, "{}", self.life_time)?;
             writeln!(w, "{}", self.polution_increase)?;
             writeln!(w, "{}", self.polution_decrease)?;
+            writeln!(w, "{}", self.polution_critical_lvl)?;
             for (key, val) in &self.energy_expanse {
                 writeln!(w, "{}, {}", key, val)?;
             }
@@ -49,7 +52,7 @@ impl SimulationSettings {
         Ok(())
     }
 
-        fn load(path: &Path) -> Result<Self, Box<dyn Error>> {
+    fn load(path: &Path) -> Result<Self, Box<dyn Error>> {
         use std::io::BufRead;
         let f = File::open(path)?;
         let mut reader = std::io::BufReader::new(f);
@@ -75,6 +78,13 @@ impl SimulationSettings {
             return Err("simulation settings: missing polution_decrease".into());
         }
         let polution_decrease: f32 = line.trim().parse()?;
+
+        // polution_decrease
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            return Err("simulation settings: missing polution_critical_lvl".into());
+        }
+        let polution_critical_lvl: f32 = line.trim().parse()?;
 
         // remaining lines: energy_expanse key, val pairs
         let mut energy_expanse: HashMap<String, f32> = HashMap::new();
@@ -103,6 +113,7 @@ impl SimulationSettings {
             energy_expanse,
             polution_increase,
             polution_decrease,
+            polution_critical_lvl,
         })
     }
 }
@@ -110,7 +121,6 @@ impl SimulationSettings {
 
 pub struct Simulation {
     cells: HashMap<(i64,i64), Cell>,
-    coords: Vec<Coord>,
     world_map: Map,
 
     
@@ -135,7 +145,6 @@ impl Simulation {
                life_time: i16) -> Self {
         let world_map: Map = world_map.unwrap_or_else(|| Map::new(1024, 1024));
         let cells: HashMap<(i64,i64), Cell> = HashMap::new();
-        let coords: Vec<Coord> = Vec::new();
         let save_iter = 0;
         
         let energy_expanse = Self::get_energy_expanse();
@@ -144,11 +153,11 @@ impl Simulation {
             energy_expanse,
             polution_increase: 0.1f32, // useless
             polution_decrease: 0.1f32, // useless
+            polution_critical_lvl: 15f32
         };
 
         Simulation { 
             cells, 
-            coords,
             world_map, 
             save_iter,
             save_path,
@@ -194,7 +203,6 @@ impl Simulation {
 
     pub fn add_cells(&mut self, cells: Vec<Cell>) {
         for cell in cells {
-            self.coords.push(cell.pos.clone());
             self.cells.insert(cell.pos.to_tuple_xy(), cell);
         }
     }
@@ -253,9 +261,16 @@ impl Simulation {
         s![t_y..b_y, l_x..r_x]
     }
 
+    pub fn get_coords(&self) -> Vec<Coord> {
+        let mut coords: Vec<Coord> = Vec::with_capacity(self.cells.len());
+        for ((x, y), _) in &self.cells {
+            coords.push(Coord { x: *x, y: *y });
+        }
+        coords
+    }
+
     pub fn step(&mut self) {
-        assert_eq!(self.cells.len(), self.coords.len());
-        let mut new_coords: Vec<Coord> = Vec::with_capacity(self.cells.len());
+        let coords: Vec<Coord> = self.get_coords();
         let order = shuffled_indices(self.cells.len());
 
         // decrease life time of all existing cells
@@ -265,8 +280,9 @@ impl Simulation {
 
         let mut deleted_cells_count = 0;
         for i in order {
-            let mut coord = self.coords[i].clone();
+            let coord = coords[i].clone();
             let key = coord.to_tuple_xy();
+            if !self.cells.contains_key(&key) { continue; }
 
             let kind = {
                 let Some(cell) = self.cells.get(&key) else {
@@ -284,6 +300,36 @@ impl Simulation {
 
                 &cell.kind
             };
+
+            // check if it's too poluted to live here
+            match kind {
+                CellKind::Conductor => {
+                    let (org, elc) = self.world_map.is_lvl_critical(
+                        coord.x as usize, coord.y as usize, 
+                        self.settings.polution_critical_lvl);
+                    if org || elc {
+                        self.cells.remove(&key);
+                        continue;
+                    }
+                },
+                CellKind::Producer(p) => {
+                    let (org, elc) = self.world_map.is_lvl_critical(
+                        coord.x as usize, coord.y as usize, 
+                        self.settings.polution_critical_lvl);
+                    match p.resource {
+                        ResourceType::Solar => {
+                            if org || elc { self.cells.remove(&key); continue; }
+                        },
+                        ResourceType::Organic => {
+                            if elc { self.cells.remove(&key); continue; }
+                        },
+                        ResourceType::Electricity => {
+                            if org { self.cells.remove(&key); continue; }
+                        },
+                    }
+                },
+                _ => {}
+            }
 
             match kind {
                 CellKind::Producer(p) => {
@@ -374,22 +420,15 @@ impl Simulation {
                         energy: cell_ref.energy
                     };
                     let actions = s.get_decision(input);
-                    coord = Self::execute_actions(&mut self.cells, &mut new_coords, 
-                                                  &self.world_map, actions, coord, &self.settings);
+                    Self::execute_actions(&mut self.cells, &self.world_map, actions, coord, &self.settings);
                 },
             }
-
-            // save this cell
-            new_coords.push(coord.clone());
         }
         // println!("Cells count: {}, Coodrs count: {}", self.cells.len(), new_coords.len());
         // println!("Deleted cells count: {}", deleted_cells_count);
-
-        self.coords = new_coords;
     }
 
     fn execute_actions(cells: &mut HashMap<(i64, i64), Cell>, 
-                        new_coords: &mut Vec<Coord>, 
                         world_map: &Map, 
                         actions: Vec<Action>, 
                         coord: Coord, settings: &SimulationSettings) -> Coord {
@@ -403,16 +442,31 @@ impl Simulation {
 
         for (i, action) in actions.iter().enumerate() {
             let action_coord = coord.shift(&action.0);
+            let action_coord_key = action_coord.to_tuple_xy();
             new_cells_coords.push(action_coord.clone());
+
             // вышли за рамки мира
             if !world_map.in_bounds(action_coord.x, action_coord.y) {
                 action_is_valid[i] = false;
                 continue;
             }
-            // уже что-то есть - нельзя
-            if cells.contains_key(&action_coord.to_tuple_xy()) {
-                action_is_valid[i] = false;
-                continue;
+            
+            if cells.contains_key(&action_coord_key) {
+                match action.1 {
+                    3 => {
+                        // bud может съесть
+                        let cell_killed_energy = cells.get(&action_coord_key).expect("cannot be None").energy;
+                        let cell_hunter = cells.get_mut(&coord.to_tuple_xy()).expect("cannot be None");
+                        cell_hunter.energy += cell_killed_energy * 0.7;
+                        // delete cell from world
+                        cells.remove(&action_coord_key).expect("there was not cell there");
+                    },
+                    _ => {
+                        // уже что-то есть - нельзя
+                        action_is_valid[i] = false;
+                        continue;
+                    }
+                }
             }
 
             match action.1 {
@@ -447,7 +501,6 @@ impl Simulation {
             // move main bud
             final_bud_coord = coord.shift(&bud_dirs[main_bud_ind]);
             
-            new_coords.push(coord.clone());
             let conductor = Cell {
                 kind: CellKind::Conductor,
                 life_time: settings.life_time,
@@ -464,7 +517,6 @@ impl Simulation {
             for i in 0..bud_counter {
                 if i == main_bud_ind { continue; }
                 let new_bud_coord = coord.shift(&bud_dirs[i]);
-                new_coords.push(new_bud_coord.clone());
 
                 let parent_key = final_bud_coord.to_tuple_xy();
                 let parent_cell = cells.get(&parent_key).expect("There is no cell with such coords.");
@@ -499,7 +551,6 @@ impl Simulation {
                 _ => unreachable!("unknown action code"),
             };
             let pos = new_cells_coords[i].clone();
-            new_coords.push(pos.clone());
             let out_dir = action.0.oposite().clone();
             
             let cell = Cell {
@@ -661,16 +712,11 @@ impl Simulation {
         // load cells
         let cells_path = sim_path.join("cells");
         let cells = Self::load_cells(&cells_path)?;
-        let mut coords: Vec<Coord> = Vec::with_capacity(cells.len());
-        for ((x, y), _) in &cells {
-            coords.push(Coord { x: *x, y: *y });
-        }
 
         Ok(Self {
             world_map,
             settings,
             cells,
-            coords,
             save_iter,
             save_path: save_path_str,
             save_file_name

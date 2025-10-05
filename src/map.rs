@@ -23,6 +23,10 @@ impl Map {
         x >= 0 && x < self.width as i64 && y >= 0 && y < self.height as i64
     }
 
+    pub fn is_lvl_critical(&self, x: usize, y: usize, critival_lvl: f32) -> (bool, bool) {
+        (self.organics[(y,x)] > critival_lvl, self.electric[(y,x)] > critival_lvl)
+    }
+
     pub fn set_organics(&mut self, x: usize, y: usize, val: f32) {
         self.organics[(y,x)] = val;
     }

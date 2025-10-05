@@ -7,7 +7,6 @@ use std::path::Path;
 use std::error::Error;
 use std::fs::{OpenOptions, File};
 use std::io::{BufWriter, Write, BufReader, BufRead};
-use std::str::FromStr;
 
 // #[derive(Debug)]
 pub struct Genome {

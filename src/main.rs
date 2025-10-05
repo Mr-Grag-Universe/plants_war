@@ -16,30 +16,14 @@ pub mod common;
 pub mod simulation;
 
 
-// fn generate_cells(h: usize, w: usize, n: usize) -> Vec<Cell> {
-//     let mut cells: Vec<Cell> = Vec::with_capacity(n);
-//     let mut rng = rng(); // ваш генератор
-//     let mut pb = ProgressBar::new(n as u64);
+const N_RUNS: u64 = 3000;
+const SAVE_INTERVAL: u64 = N_RUNS / 10;
 
-//     for _ in 0..n {
-//         let genome = Genome::random(1 + 2 * 7 * 7, 512, 512, 4 * 4, 0.0, 0.1);
-//         let cell = Cell {
-//             kind: CellKind::Storage(Storage { energy: 0.5, genome }),
-//             life_time: 100,
-//             pos: Coord {
-//                 x: rng.random_range(0..w) as i64,
-//                 y: rng.random_range(0..h) as i64,
-//             },
-//             out_dir: common::Direction::East,
-//             energy: 0.5,
-//         };
-//         cells.push(cell);
-//         pb.inc();
-//     }
+const DEFAULT_N_CELLS: usize = 5000;
+const DEFAULT_MAP_H: usize = 1024;
+const DEFAULT_MAP_W: usize = 1024;
+const DEFAULT_LIFETIME: i16 = 150;
 
-//     pb.finish_println("done");
-//     cells
-// }
 
 fn generate_cells_parallel(h: usize, w: usize, n: usize) -> Vec<Cell> {
     // generate candidates in parallel
@@ -49,7 +33,7 @@ fn generate_cells_parallel(h: usize, w: usize, n: usize) -> Vec<Cell> {
             let genome = Genome::random(1 + 2 * 5 * 5, 128, 256, 4 * 4, 0.0, 0.1);
             Cell {
                 kind: CellKind::Storage(Storage { genome }),
-                life_time: 50,
+                life_time: DEFAULT_LIFETIME,
                 pos: Coord {
                     x: local_rng.random_range(0..w) as i64,
                     y: local_rng.random_range(0..h) as i64,
@@ -75,26 +59,33 @@ fn generate_cells_parallel(h: usize, w: usize, n: usize) -> Vec<Cell> {
 }
 
 
-fn main() {
-    // let world_map = Map::new(1024, 1024);
-    // let mut simulation = Simulation::new(Some(world_map), 
-    //                                                  String::from("saves"), 
-    //                                                  String::from("snap"),
-    //                                                  150);
+fn create_new_simulation() -> Simulation {
+    let world_map = Map::new(DEFAULT_MAP_W, DEFAULT_MAP_H);
+    let mut s = Simulation::new(Some(world_map), 
+                                                    String::from("saves"), 
+                                                    String::from("snap"),
+                                                    DEFAULT_LIFETIME);
     println!("world generation...");
-    // simulation.add_cells(generate_cells_parallel(1024, 1024, 5000));
-    let mut simulation = Simulation::load(Path::new("./saves_back")).expect("cannot load simulation");
+    s.add_cells(generate_cells_parallel(DEFAULT_MAP_H, DEFAULT_MAP_W, DEFAULT_N_CELLS));
+    s
+}
+
+
+fn main() {
+    let mut simulation = Simulation::load(Path::new("./saves_back")).unwrap_or_else(|_| {
+        println!("cannot load simulation");
+        create_new_simulation()
+    });
     
     println!("\nrunning the world!");
-    let n_runs = 10000;
-    let mut pb = ProgressBar::new(n_runs);
-    for i in 0..n_runs {
+    let mut pb = ProgressBar::new(N_RUNS);
+    for i in 0..N_RUNS {
         simulation.step();
         if simulation.save_view(false).is_err() {
             println!("We broke around the saving of the view to file!");
             panic!("save error!");
         }
-        if i > 0 && i % 100 == 0 && simulation.save_state(true).is_err() {
+        if i > 0 && i % SAVE_INTERVAL == 0 && simulation.save_state(true).is_err() {
             println!("We broke around the saving of the state to file!");
             panic!("save error!");
         }
